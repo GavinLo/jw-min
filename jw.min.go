@@ -16,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -45,6 +46,13 @@ const (
 	// http://code.google.com/p/htmlcompressor/
 	htmlcompressor = "htmlcompressor-1.5.3.jar"
 )
+
+func chpwd() string {
+	_, pwf, _, _ := runtime.Caller(0)
+	pwd := path.Dir(pwf)
+	os.Chdir(pwd)
+	return pwd
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -93,6 +101,7 @@ func main() {
 	inputString := string(inputData)
 
 	// 寻找输入文件（html）中的js声明，并编译js文件
+	var jsCmd *exec.Cmd = nil
 	outputJS := path.Join("js", inputName) + ".js"
 	var scripts []string
 	reg := regexp.MustCompile("\\<script[\\S\\s]+?\\</script\\>")
@@ -121,22 +130,24 @@ func main() {
 		if Debug {
 			fmt.Println("Scripts:", scripts)
 		}
-		fmt.Println("[INFO] 编译js脚本(Compile Scripts)...")
 		var jsArgs []string
-		outputJS = path.Join(options.OutputDir, outputJS)
+		outputJS, err := filepath.Abs(path.Join(options.OutputDir, outputJS))
+		if err != nil {
+			fmt.Printf("[ERROR] 获取绝对路径失败(Get Absolute Path Failed): %s\n", err.Error())
+			return
+		}
 		outputJSDir := path.Dir(outputJS)
 		os.MkdirAll(outputJSDir, os.FileMode(0766))
 		jsArgs = append(jsArgs, jar, jscompiler, "--js_output_file="+outputJS)
 		jsArgs = append(jsArgs, scripts...)
-		cmd := exec.Command(java, jsArgs...)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			fmt.Printf("[ERROR] 编译js脚本失败(Compile Scripts Failed): %s\n", out)
-			return
+		jsCmd = exec.Command(java, jsArgs...)
+		if Debug {
+			fmt.Println("[INFO ] jsCmd: ", jsCmd)
 		}
 	}
 
 	// 寻找输入文件（html）中的css声明，并优化css文件
+	var cssCmds []*exec.Cmd
 	var csss []string
 	reg = regexp.MustCompile("\\<link[\\S\\s]+?/\\>")
 	strs = reg.FindAllString(inputString, -1)
@@ -165,43 +176,77 @@ func main() {
 		if Debug {
 			fmt.Println("CSS:", csss)
 		}
-		fmt.Println("[INFO] 编译css文件(Compile CSS files)...")
 		for _, css := range csss {
-			cssIn := path.Join(inputDir, css)
-			cssOut := path.Join(options.OutputDir, css)
-			cssOutDir := path.Dir(cssOut)
-			os.MkdirAll(cssOutDir, os.FileMode(0766))
-			cmd := exec.Command(java, jar, yuicompressor, cssIn, "-o", cssOut)
-			out, err := cmd.CombinedOutput()
+			cssIn, err := filepath.Abs(path.Join(inputDir, css))
 			if err != nil {
-				fmt.Printf("[ERROR] 编译css文件失败(Compile CSS files Failed(%s)): %s\n", cssIn, out)
+				fmt.Printf("[ERROR] 获取绝对路径失败(Get Absolute Path Failed): %s\n", err.Error())
 				return
 			}
+			cssOut, err := filepath.Abs(path.Join(options.OutputDir, css))
+			if err != nil {
+				fmt.Printf("[ERROR] 获取绝对路径失败(Get Absolute Path Failed): %s\n", err.Error())
+				return
+			}
+			cssOutDir := path.Dir(cssOut)
+			os.MkdirAll(cssOutDir, os.FileMode(0766))
+			cssCmd := exec.Command(java, jar, yuicompressor, cssIn, "-o", cssOut)
+			if Debug {
+				fmt.Println("[INFO ] cssCmd: ", cssCmd)
+			}
+			cssCmds = append(cssCmds, cssCmd)
 		}
 	}
 
 	// 优化html
-	fmt.Println("[INFO] 编译Html(Compile Html)...")
 	// 生成中间文件
-	outputObjHtml := path.Join(options.OutputDir, inputName) + ".obj.html"
+	outputObjHtml, err := filepath.Abs(path.Join(options.OutputDir, inputName) + ".obj.html")
+	if err != nil {
+		fmt.Printf("[ERROR] 获取绝对路径失败(Get Absolute Path Failed): %s\n", err.Error())
+		return
+	}
 	err = ioutil.WriteFile(outputObjHtml, []byte(inputString), os.FileMode(0644))
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
-	outputHtml := path.Join(options.OutputDir, inputName) + ".html"
-	cmd := exec.Command(java, jar, htmlcompressor, "-o", outputHtml, outputObjHtml)
-	out, err := cmd.CombinedOutput()
+	outputHtml, err := filepath.Abs(path.Join(options.OutputDir, inputName) + ".html")
 	if err != nil {
-		fmt.Printf("[ERROR] 编译Html失败(Compile Html Failed): %s\n", out)
+		fmt.Printf("[ERROR] 获取绝对路径失败(Get Absolute Path Failed): %s\n", err.Error())
+		return
+	}
+	htmlCmd := exec.Command(java, jar, htmlcompressor, "-o", outputHtml, outputObjHtml)
+	if Debug {
+		fmt.Println("[INFO ] htmlCmd: ", htmlCmd)
+	}
+
+	// 执行命令
+	chpwd()
+	fmt.Println("[INFO ] 编译js脚本(Compile Scripts)...")
+	jsOut, err := jsCmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("[ERROR] 编译js脚本失败(Compile Scripts Failed): %s\n", string(jsOut))
+		return
+	}
+	fmt.Println("[INFO ] 编译css文件(Compile CSS files)...")
+	for _, cssCmd := range cssCmds {
+		cssOut, err := cssCmd.CombinedOutput()
+		if err != nil {
+			fmt.Printf("[ERROR] 编译css文件失败(Compile CSS files Failed): %s\n", string(cssOut))
+			return
+		}
+	}
+	fmt.Println("[INFO ] 编译Html(Compile Html)...")
+	htmlOut, err := htmlCmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("[ERROR] 编译Html失败(Compile Html Failed): %s\n", htmlOut)
 		return
 	}
 	// 删除中间文件
 	os.Remove(outputObjHtml)
 
 	// 完成
-	fmt.Println("[INFO] 完成(Done).")
+	fmt.Println("[INFO ] 完成(Done).")
 }
 
 func parseOptions() (*Options, error) {
