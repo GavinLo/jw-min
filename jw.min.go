@@ -40,7 +40,7 @@ const (
 	java = "java"
 	jar  = "-jar"
 	// https://developers.google.com/closure/compiler/
-	jscompiler = "compiler.jar"
+	jscompiler = "closure-compiler-v20170521.jar"
 	// http://yui.github.io/yuicompressor/
 	yuicompressor = "yuicompressor-2.4.8.jar"
 	// http://code.google.com/p/htmlcompressor/
