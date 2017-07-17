@@ -8,6 +8,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -27,11 +28,49 @@ type Options struct {
 	ShowVersion bool
 	InputFile   string
 	OutputDir   string
+	StaticFile  string
 }
 
 func (this *Options) String() string {
 	return "\nInputFile: " + this.InputFile + "\n" +
 		"OutputDir: " + this.OutputDir
+}
+
+// 静态路由表
+type StaticRoutes map[string]string
+
+func (this StaticRoutes) Load(file string) (StaticRoutes, error) {
+	staticFile, err := os.Open(file)
+	if err != nil {
+		err = errors.New(fmt.Sprintf("[ERROR] 不能读取静态路由表'%v'. (%v)\n", file, err.Error()))
+	} else {
+		staticData, err := ioutil.ReadAll(staticFile)
+		if err != nil {
+			err = errors.New(fmt.Sprintf("[ERROR] 不能读取静态路由表'%v'. (%v)\n", file, err.Error()))
+		} else {
+			err = json.Unmarshal(staticData, &this)
+			if err != nil {
+				err = errors.New(fmt.Sprintf("[ERROR] 静态路由表解释出错. (%v)\n", err.Error()))
+			}
+		}
+	}
+	newRoutes := make(StaticRoutes)
+	for k, v := range this {
+		k = strings.TrimPrefix(k, "/")
+		if len(k) > 0 {
+			newRoutes[k] = v
+		}
+	}
+	return newRoutes, err
+}
+
+func (this StaticRoutes) HandlePath(path string) string {
+	for k, v := range this {
+		if strings.HasPrefix(path, k) {
+			return strings.Replace(path, k, v, 1)
+		}
+	}
+	return path
 }
 
 const (
@@ -76,9 +115,18 @@ func main() {
 	}
 	err = os.MkdirAll(options.OutputDir, os.FileMode(0766))
 	if err != nil {
-		fmt.Println(err)
+		fmt.Printf("[ERROR] '%v'创建失败. (%v)\n", options.OutputDir, err.Error())
 		usage()
 		return
+	}
+	var staticRoutes StaticRoutes
+	staticRoutes, err = staticRoutes.Load(options.StaticFile)
+	if err != nil {
+		fmt.Print(err.Error())
+	}
+	if Debug {
+		fmt.Println("static file:", options.StaticFile)
+		fmt.Println("static settings:", staticRoutes)
 	}
 
 	// 预定义一些值
@@ -121,6 +169,7 @@ func main() {
 			if len(sub) > 1 {
 				script := sub[1]
 				if len(script) > 0 {
+					script = staticRoutes.HandlePath(script)
 					scripts = append(scripts, path.Join(inputDir, script))
 				}
 			}
@@ -167,6 +216,7 @@ func main() {
 				href := hrefs[1]
 				if len(href) > 0 {
 					// csss = append(csss, path.Join(inputDir, href))
+					href = staticRoutes.HandlePath(href)
 					csss = append(csss, href)
 				}
 			}
@@ -250,9 +300,13 @@ func main() {
 }
 
 func parseOptions() (*Options, error) {
-	options := &Options{ShowVersion: false}
+	options := &Options{
+		ShowVersion: false,
+		StaticFile:  "static.json",
+	}
 	var err error
 	outputDirIndex := -1
+	staticFileIndex := -1
 	autoAddTime := false
 	for i, arg := range os.Args {
 		if i == 0 {
@@ -271,18 +325,26 @@ func parseOptions() (*Options, error) {
 				}
 				continue
 			} else {
-				return nil, errors.New("No output directory found.")
+				return nil, errors.New("在'-o'后面找不到输出目录.")
 			}
 		} else if arg == "-t" {
 			autoAddTime = true
 			options.OutputDir = path.Join(options.OutputDir, time.Now().Format("2006-01-02 15-04-05"))
 		} else if arg == "-d" {
 			Debug = true
+		} else if arg == "-s" {
+			if len(os.Args) > ni {
+				staticFileIndex = ni
+				options.StaticFile, err = filepath.Abs(os.Args[staticFileIndex])
+			}
 		} else {
-			if i != outputDirIndex {
+			if i != outputDirIndex && i != staticFileIndex {
 				options.InputFile, err = filepath.Abs(arg)
 			}
 		}
+	}
+	if len(options.InputFile) == 0 || len(options.OutputDir) == 0 {
+		return nil, errors.New("[ERROR] 没有输入文件或输出目录")
 	}
 	return options, err
 }
@@ -290,6 +352,11 @@ func parseOptions() (*Options, error) {
 func usage() {
 	fmt.Println("USAGE: jw-min [options] your-html-file -o output-dir ")
 	fmt.Println("\nOPTIONS:")
-	fmt.Println("\t-t \tAuto Add Date String in output-dir.")
-	fmt.Println("\t-d \tDebug output.")
+	fmt.Println("\t-t \t自动添加日期目录到目标目录下(Auto Add Date String in output-dir).")
+	fmt.Println("\t-d \t调试输出(Debug output).")
+	fmt.Println("\t-s \t静态路由文件，默认为'static.json'(Static Route File, default:static.json).")
+	fmt.Println(`	format: {
+			pattern: path,
+			...
+		}`)
 }

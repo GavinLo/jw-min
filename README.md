@@ -8,13 +8,22 @@ jw-min是一个优化和发布html和相关js、css文件的工具
 ## 用法
 
 	USAGE: jw-min [options] your-html-file -o output-dir 
-	
+
 	OPTIONS:
-		-t 	Auto Add Date String in output-dir.
-		-d 	Debug output.
-		-v	Show version.
+		-t 	自动添加日期目录到目标目录下(Auto Add Date String in output-dir).
+		-d 	调试输出(Debug output).
+		-s 	静态路由文件，默认为’static.json’(Static Route File, default:static.json).
+		format: {
+				pattern: path,
+				...
+			}
+
 		
 # 开发日志
+
+## 2017.07.17
+
+* 添加静态路由表功能，js和css的编译时，文件路径会先通过路由表匹配，找到实际的文件之后再编译
 
 ## 2017.06.22
 
