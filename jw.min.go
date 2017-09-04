@@ -24,8 +24,14 @@ import (
 
 var Debug = false
 
+func FileExist(file string) bool {
+	_, err := os.Stat(file)
+	return err == nil || os.IsExist(err)
+}
+
 type Options struct {
 	ShowVersion bool
+	ProjectDir  string
 	InputFile   string
 	OutputDir   string
 	StaticFile  string
@@ -34,6 +40,16 @@ type Options struct {
 func (this *Options) String() string {
 	return "\nInputFile: " + this.InputFile + "\n" +
 		"OutputDir: " + this.OutputDir
+}
+
+type Project struct {
+	InputFile  string
+	OutputDir  string
+	StaticFile string
+}
+
+func (this *Project) Load(dir string) {
+
 }
 
 // 静态路由表
@@ -150,19 +166,22 @@ func main() {
 
 	// 寻找输入文件（html）中的js声明，并编译js文件
 	var jsCmd *exec.Cmd = nil
-	outputJS := path.Join("js", inputName) + ".js"
+	outputJS := "js/j0.js"
 	var scripts []string
+	// 匹配"<script src="xxx.js"></script>"
 	reg := regexp.MustCompile("\\<script[\\S\\s]+?\\</script\\>")
 	strs := reg.FindAllString(inputString, -1)
 	if len(strs) > 0 {
+		// 除第一个js行替换为"<script src="output.js"></script>"以外，其余的去掉
 		firstMatch := true
-		inputString = reg.ReplaceAllStringFunc(inputString, func(string) string {
-			if firstMatch {
-				firstMatch = false
-				return "<script src=\"" + outputJS + "\"></script>"
-			}
-			return ""
-		})
+		// inputString = reg.ReplaceAllStringFunc(inputString, func(string) string {
+		// 	if firstMatch {
+		// 		firstMatch = false
+		// 		return "<script src=\"" + outputJS + "\"></script>"
+		// 	}
+		// 	return ""
+		// })
+		// 获取"<script src="xxx.js"></script>"中的"xxx.js"部分
 		reg = regexp.MustCompile("src[\\s]*=[\\s]*\"([\\S]*)\"")
 		for _, str := range strs {
 			sub := reg.FindStringSubmatch(str)
@@ -170,7 +189,18 @@ func main() {
 				script := sub[1]
 				if len(script) > 0 {
 					script = staticRoutes.HandlePath(script)
-					scripts = append(scripts, path.Join(inputDir, script))
+					script = path.Join(inputDir, script)
+					if !FileExist(script) {
+						// fmt.Println(script, "is not existed.")
+						continue
+					}
+					scripts = append(scripts, script)
+					if firstMatch {
+						firstMatch = false
+						inputString = strings.Replace(inputString, str, "<script src=\""+outputJS+"\"></script>", 1)
+					} else {
+						inputString = strings.Replace(inputString, str, "", 1)
+					}
 				}
 			}
 		}
@@ -180,11 +210,7 @@ func main() {
 			fmt.Println("Scripts:", scripts)
 		}
 		var jsArgs []string
-		outputJS, err := filepath.Abs(path.Join(options.OutputDir, outputJS))
-		if err != nil {
-			fmt.Printf("[ERROR] 获取绝对路径失败(Get Absolute Path Failed): %s\n", err.Error())
-			return
-		}
+		outputJS := path.Join(options.OutputDir, outputJS)
 		outputJSDir := path.Dir(outputJS)
 		os.MkdirAll(outputJSDir, os.FileMode(0766))
 		jsArgs = append(jsArgs, jar, jscompiler, "--js_output_file="+outputJS)
@@ -198,9 +224,13 @@ func main() {
 	// 寻找输入文件（html）中的css声明，并优化css文件
 	var cssCmds []*exec.Cmd
 	var csss []string
+	var cssOuts []string
+	// 匹配"<link rel="xxx" href="xxx.css" />"
 	reg = regexp.MustCompile("\\<link[\\S\\s]+?/\\>")
 	strs = reg.FindAllString(inputString, -1)
+	i := 0
 	if len(strs) > 0 {
+		// 获取rel属性和href属性
 		reg_rel := regexp.MustCompile("rel[\\s]*=[\\s]*\"([\\S]*)\"")
 		reg_href := regexp.MustCompile("href[\\s]*=[\\s]*\"([\\S]*)\"")
 		for _, str := range strs {
@@ -218,6 +248,14 @@ func main() {
 					// csss = append(csss, path.Join(inputDir, href))
 					href = staticRoutes.HandlePath(href)
 					csss = append(csss, href)
+					cssOut := fmt.Sprintf("css/s%d.css", i)
+					cssOuts = append(cssOuts, cssOut)
+					link := fmt.Sprintf("<link rel=\"stylesheet\" href=\"%s\">", cssOut)
+					if Debug {
+						fmt.Println(str, " => ", link)
+					}
+					inputString = strings.Replace(inputString, str, link, 1)
+					i++
 				}
 			}
 		}
@@ -226,17 +264,11 @@ func main() {
 		if Debug {
 			fmt.Println("CSS:", csss)
 		}
-		for _, css := range csss {
-			cssIn, err := filepath.Abs(path.Join(inputDir, css))
-			if err != nil {
-				fmt.Printf("[ERROR] 获取绝对路径失败(Get Absolute Path Failed): %s\n", err.Error())
-				return
-			}
-			cssOut, err := filepath.Abs(path.Join(options.OutputDir, css))
-			if err != nil {
-				fmt.Printf("[ERROR] 获取绝对路径失败(Get Absolute Path Failed): %s\n", err.Error())
-				return
-			}
+		cssOutDir := path.Join(options.OutputDir, "css")
+		os.MkdirAll(cssOutDir, os.FileMode(0766))
+		for i, css := range csss {
+			cssIn := path.Join(inputDir, css)
+			cssOut := path.Join(options.OutputDir, cssOuts[i])
 			cssOutDir := path.Dir(cssOut)
 			os.MkdirAll(cssOutDir, os.FileMode(0766))
 			cssCmd := exec.Command(java, jar, yuicompressor, cssIn, "-o", cssOut)
@@ -249,22 +281,14 @@ func main() {
 
 	// 优化html
 	// 生成中间文件
-	outputObjHtml, err := filepath.Abs(path.Join(options.OutputDir, inputName) + ".obj.html")
-	if err != nil {
-		fmt.Printf("[ERROR] 获取绝对路径失败(Get Absolute Path Failed): %s\n", err.Error())
-		return
-	}
+	outputObjHtml := path.Join(options.OutputDir, inputName+".obj.html")
 	err = ioutil.WriteFile(outputObjHtml, []byte(inputString), os.FileMode(0644))
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
-	outputHtml, err := filepath.Abs(path.Join(options.OutputDir, inputName) + ".html")
-	if err != nil {
-		fmt.Printf("[ERROR] 获取绝对路径失败(Get Absolute Path Failed): %s\n", err.Error())
-		return
-	}
+	outputHtml := path.Join(options.OutputDir, inputName+".html")
 	htmlCmd := exec.Command(java, jar, htmlcompressor, "-o", outputHtml, outputObjHtml)
 	if Debug {
 		fmt.Println("[INFO ] htmlCmd: ", htmlCmd)
@@ -316,6 +340,10 @@ func parseOptions() (*Options, error) {
 		if arg == "-v" {
 			options.ShowVersion = true
 			return options, nil
+		} else if arg == "-p" {
+			if len(os.Args) > ni {
+				options.ProjectDir = os.Args[ni]
+			}
 		} else if arg == "-o" {
 			if len(os.Args) > ni {
 				outputDirIndex = ni
@@ -346,11 +374,13 @@ func parseOptions() (*Options, error) {
 	if len(options.InputFile) == 0 || len(options.OutputDir) == 0 {
 		return nil, errors.New("[ERROR] 没有输入文件或输出目录")
 	}
+	options.OutputDir, err = filepath.Abs(options.OutputDir) // 化为绝对路径
 	return options, err
 }
 
 func usage() {
 	fmt.Println("USAGE: jw-min [options] your-html-file -o output-dir ")
+	fmt.Println(" 或者: jw-min -p your-project-dir ")
 	fmt.Println("\nOPTIONS:")
 	fmt.Println("\t-t \t自动添加日期目录到目标目录下(Auto Add Date String in output-dir).")
 	fmt.Println("\t-d \t调试输出(Debug output).")
@@ -359,4 +389,5 @@ func usage() {
 			pattern: path,
 			...
 		}`)
+	fmt.Println("\t-p \t指定工程目录，会自动识别目录中的工程文件.jwmproj(Specify the project directory, will detect the project configure file .jwmproj).")
 }
